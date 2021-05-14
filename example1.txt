@@ -1,0 +1,8 @@
+Add text
+
+~~~~
+<<dd_do>>
+sysuse auto, clear
+summarize price
+<</dd_do>> 
+~~~~
