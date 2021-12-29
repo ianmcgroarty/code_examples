@@ -1,0 +1,152 @@
+/* THE FIRST WAY */
+-- Write only the SQL statement that solves the problem and nothing else
+WITH all_join AS (
+  SELECT 
+      r.id AS region_id
+    , r.name AS region_name
+    
+    , st.id AS state_id
+    , st.name AS state_name
+  
+    , e.id AS employee_id
+    , e.name AS employee_name
+     
+    , s.id AS sales_id
+    , CASE WHEN s.amount IS NULL THEN 0 ELSE s.amount END AS sales_amount
+  
+  FROM regions r
+    
+    LEFT JOIN states st
+      ON r.id = st.regionId
+  
+    LEFT JOIN employees e
+      ON st.id = stateId
+  
+    LEFT JOIN sales s
+      ON e.id = s.employeeId
+  
+)
+
+, region_agg AS (
+    SELECT 
+      region_name
+      , SUM(COALESCE(sales_amount,0)) AS total_sales_amount
+      , COUNT( DISTINCT employee_id) AS employee_count
+    FROM all_join 
+    GROUP BY region_name
+)
+
+, var_create AS (
+   SELECT
+      region_name
+            , CASE  
+          WHEN employee_count != 0 THEN (total_sales_amount / employee_count)
+          ELSE 0 
+        END AS sales_per_emp
+   FROM region_agg
+)
+
+, output AS (
+SELECT 
+  region_name
+  , sales_per_emp
+  ,
+  (SELECT 
+     MAX(sales_per_emp) 
+   FROM var_create
+  ) - sales_per_emp AS max_diff_avg
+
+FROM var_create
+)
+
+SELECT * FROM output
+
+/*************** THE SECOND WAY *****************/ 
+
+
+
+-- Aggregate sales to employee level
+WITH sales_agg AS (
+  SELECT
+      employeeId AS employee_id
+    , SUM(COALESCE(amount,0)) AS sales_amount
+  FROM sales
+  GROUP BY employeeId
+)
+
+-- Join employee to sales
+, sales_emp AS (
+   SELECT 
+      e.id AS employee_id
+    , e.name AS employee_name
+    , e.stateId AS state_id
+    , CASE WHEN s.sales_amount IS NULL THEN 0 ELSE s.sales_amount END AS sales_amount  
+   FROM employees e
+    LEFT JOIN sales_agg s
+    ON e.id = s.employee_id
+)
+
+-- Aggregate employee to state level
+, employee_agg AS (
+    SELECT state_id
+      , COUNT(0) AS employee_count
+      , SUM(sales_amount) AS sales_amount
+     FROM sales_emp
+    GROUP BY state_id
+)
+
+-- Join with state 
+, state_join AS (
+    SELECT
+      e.state_id
+      , CASE WHEN e.employee_count IS NULL THEN 0 ELSE e.employee_count END AS employee_count
+      , CASE WHEN e.sales_amount IS NULL THEN 0 ELSE e.sales_amount END AS sales_amount
+      , st.name AS state_name
+      , st.regionId AS region_id
+    FROM states st
+      LEFT JOIN employee_agg e
+      ON e.state_id = st.id
+  )
+
+-- Join with Region
+, state_region AS (
+    SELECT 
+      st.state_id
+      , CASE WHEN st.employee_count IS NULL THEN 0 ELSE st.employee_count END AS employee_count
+      , CASE WHEN st.sales_amount IS NULL THEN 0 ELSE st.sales_amount END AS sales_amount
+      , st.state_name
+      , r.id AS region_id
+      , r.name AS region_name
+    FROM regions r
+      LEFT JOIN state_join st
+        ON st.region_id = r.id
+)
+
+-- Aggregate to region level.
+, region_agg AS (
+    SELECT region_name
+      , SUM(sales_amount) AS sales_amount
+      , SUM(employee_count) AS employee_count
+     FROM state_region
+      GROUP BY region_name
+  )
+  
+, var_create AS (
+    SELECT * 
+      , CASE  
+          WHEN employee_count != 0 THEN (sales_amount / employee_count)
+          ELSE 0 
+        END AS sales_per_emp
+    FROM region_agg
+)
+
+, output AS (
+    SELECT region_name 
+      , sales_per_emp
+      , (SELECT MAX(sales_per_emp) FROM var_create) - sales_per_emp AS difference
+FROM var_create
+)
+
+ 
+SELECT * FROM output
+ 

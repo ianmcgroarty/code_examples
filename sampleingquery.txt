@@ -1,0 +1,80 @@
+              WITH cte1 AS (
+                          select distinct
+                                referencenumber,
+                                CustomerId,
+                                bankid,
+                                AccountOriginationDate,
+                                periodid,
+                                CycleEndingBalance,
+                                CycleEndingBalancePromotional,
+                                CycleEndingBalancesPenalty,
+                                AverageDailyBalance,
+                                MinimumPaymentDue,
+                                TotalPaymentDue,
+                                Actualpaymentamount,
+                                OriginalCreditScorePrimaryBorrower as origscore,
+      				OriginalCreditScoreNameVersion as origname,
+      				OriginalCreditScoreVersion as origversion,
+      				RefreshedCreditScorePrimaryBorrower as refscore,
+      				RefreshedCreditScoreNameVersion as refname,
+      				RefreshedCreditScoreVersion as refversion,
+      				CreditScoreRefreshDate as refdate,
+				Lineincreasedecreaseflag,
+				case when Lineincreasedecreaseflag = 2 then 1 else 0 end
+				as cli,
+				case when Lineincreasedecreaseflag = 1 then 1 else 0 end
+				as cld,
+				OriginalCreditLimit as origlim,
+				CurrentCreditLimit as currlim,
+				creditlinechangetype,
+				case when creditlinechangetype = 2 then 1 else 0 end as cli_cust,
+				case when creditlinechangetype = 1 then 1 else 0 end as cli_bank,
+
+				MonthEndClosedRevokedFlag,
+				AccountMonthEndDelinquency,
+                                Dayspastdue as dpd,
+
+                                Cycleendingretailapr,
+
+                                Chargeoffreasoncode as coreason,
+                                grosschargeoffincurrentmonthamount as coamt,
+
+                                BorrowerIncome,
+                                BorrowerIncomeType,
+                                UpdatedBorrowerIncome,
+                                UpdatedBorrowerIncomeType,
+                                DateUpdatedBorrowerIncome,
+
+                                financecharge
+
+                 from y14m.view_account_level_desc_mr
+                 WHERE 1=1
+                  AND rand_no <10
+
+                  AND creditcardtype in (1) 
+                  AND CreditCardSecuredFlag = 0 
+                  AND producttype in (1,2,3,4,5) 
+                  AND LendingType = 1 
+                  AND bankid in (1073757,1951350,2277860,3846375,1119794,1039502,1120754)
+                ) ,
+    cte2 as (
+        SELECT 
+          cte1.* 
+          , CASE WHEN bankid = 1120754
+              THEN COALESCE(newreferencenumber,cte1.referencenumber) 
+              ELSE cte1.referencenumber 
+              END AS newreferencenumber
+          , REPLACE(customerid,' ','') as customerid2
+        FROM cte1 
+        LEFT JOIN y14m.view_wf_refnum_map_201510 b
+        ON cte1.referencenumber = b.oldreferencenumber 
+    )
+  
+    SELECT
+      *
+      , CAST(bankid AS char(7))||'_'||customerid2 AS newcid
+      , CAST(bankid AS char(7))||'_'||referencenumber AS newref
+    FROM cte2
+    WHERE 1=1
+     AND customerid2 NOT IN ('0.',' ','0','.','000000000000000000',
+	             '10000000000000-999','000100000000000000','000100000000000047') 
