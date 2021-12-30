@@ -1,0 +1,590 @@
+---
+title: "Pull the Public Data"
+author: "Ian McGroarty"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    df_print: paged
+    code_folding: hide
+    toc: true
+    toc_depth: 3
+    toc_float: true
+---
+
+```{r setup, include=FALSE}
+library(plotly)
+library(readxl)
+library(lubridate)
+library(stringr)
+library(seasonal)
+library(dplyr)
+library(lubridate)
+library(zoo)
+library(jsonlite)
+library(httr)
+library(data.table)
+
+# Dates
+  todays_date <-today()
+  updatedate <- format(todays_date,'%d%B%Y')
+  month_date <- todays_date %>% floor_date('month') %>% as.character()
+  
+  #reportingperiod <- todays_date %m-% months(2) %>% format(.,'%B%Y')
+  #currmonth <- todays_date %m-% months(2) %>% floor_date('month') %>% format(.,'%Y-%m-%d') %>% as.character()
+  #lastreportingperiod <- todays_date %m-% months(3) %>% format(.,'%B%Y')
+
+# Working Directory
+  user_c1 <- Sys.info()["user"]
+  user_git <- ifelse(user_c1 == "c1imm01","ian_git", "git")
+  data_directory <- paste0("/home/phil/",user_c1,"/", user_git, "/fomc_charts/Data/Public")
+
+  basedir <- paste0(data_directory,"/",month_date)
+  outputdir <- paste0(data_directory,"/",month_date,"/Output/")
+  rootdir <- paste0(data_directory,"/",month_date,"/Data")
+
+  ## If the folders exist, set the working directory if not create them then set the working directory
+    if (file.exists(rootdir)){
+        setwd(rootdir)
+    } else {
+        dir.create(basedir)
+        dir.create(outputdir)
+        dir.create(rootdir)
+        setwd(rootdir)
+    }
+    getwd()
+
+# Fred Key - please get your own 
+fred_key <- "64815e5a2ada38e1227598c4b294662c"
+
+# Chunk Options
+  knitr::opts_knit$set(root.dir  = rootdir)
+  knitr::opts_chunk$set(echo=TRUE)
+  knitr::opts_chunk$set(warning=TRUE)
+  knitr::opts_chunk$set(message=TRUE)
+```
+
+
+```{r renderian, eval=FALSE}
+rmarkdown::render(
+  paste0("/home/phil/",user_c1,"/",user_git,"/fomc_charts/Code/external_fomc_data.Rmd")
+                  ,output_format = "html_document"
+                  ,output_file = paste0(outputdir,"external_datacreate_",updatedate,".html")
+                  ,run_pandoc = TRUE ) 
+```
+
+
+# Functions
+
+```{r echo=TRUE, warning=FALSE, message=FALSE}
+# Plotly function
+
+plotly_subtitle <- function(subtitlezz='text') {
+  list(
+   x = 0.5
+  ,y = 1.049
+  ,text = subtitlezz
+  ,xref = "paper"
+  ,yref = "paper"
+  ,showarrow = FALSE
+  #,arrowhead = 7
+  #,ax = 20
+  #,ay = -40
+  ,font = list(size=15)
+)
+}
+
+
+plotly_source <- function(subtitlezz='text') {
+  list(
+   x = -0.0
+  ,y = -0.18
+  ,text = subtitlezz
+  ,xref = "paper"
+  ,yref = "paper"
+  ,showarrow = FALSE
+  #,arrowhead = 7
+  #,ax = 20
+  #,ay = -40
+  ,font = list(size=15, family = "Ariel")
+)
+}
+
+
+plotly_source_long <- function(subtitlezz='text') {
+  list(
+   x = -0.0
+  ,y = -0.25
+  ,text = subtitlezz
+  ,xref = "paper"
+  ,yref = "paper"
+  ,showarrow = FALSE
+  #,arrowhead = 7
+  #,ax = 20
+  #,ay = -40
+  ,font = list(size=15, family = "Ariel")
+)
+}
+
+
+# Seasonal Function
+ seasonalize_byprime <- function(avgdata,avgvar,periodvar, scorevar){
+  
+   # This just makes it easier to select the variables 
+    varnum <- names(avgdata) %in% avgvar %>% which()
+    
+      for (i in varnum){ 
+        # Create the seasonal time series for each score group    
+          rg1         <- avgdata %>% dplyr::filter(orig_score_bin == "nonprime" ) %>% dplyr::filter(periodid >= '2012-06-01')
+          rg1$ses <- ts(rg1[[i]], frequency = 12, start=c(2012,6)) %>% seas(., out=FALSE) %>% .$data %>% data.frame() %>% .$final
+          rg2         <- avgdata %>% dplyr::filter(orig_score_bin == "prime" ) %>% dplyr::filter(periodid >= '2012-06-01')
+          rg2$ses <- ts(rg2[[i]], frequency = 12, start=c(2012,6)) %>% seas(., out=FALSE) %>% .$data %>% data.frame() %>% .$final
+      }
+  
+    # Take the column
+      sesbyrisk <- rbind(rg1,rg2) %>% select(periodvar,scorevar,"ses")
+    # Join the new column onto the original data 
+      joined <- left_join(avgdata,sesbyrisk,by=c(periodvar,scorevar))
+      
+  return(joined)
+ }
+ 
+ 
+```
+
+
+# Prime Rate
+
+
+```{r}
+# Date 
+currmonth <- todays_date %m-% months(1) %>% floor_date('month') %>% format(.,'%Y-%m-%d') %>% as.character()
+
+
+#Pull prime Rate
+# Set parameters
+obs_start <- "2000-01-01"
+fred_api <- paste0(
+  "https://api.stlouisfed.org/fred/series/observations?series_id="
+  ,"PRIME"
+  ,"&api_key=",fred_key
+  ,"&file_type=json&observation_start=",obs_start
+)
+
+# Get and format as data
+res <- GET(fred_api)
+fredpull  <- fromJSON(rawToChar(res$content)) %>% .$observations
+fredpull <- fredpull %>% 
+  dplyr::mutate(., year=lubridate::year(.$date),month=lubridate::month(.$date))
+
+
+# Get Months up to current Month
+spread.months <- seq(as.Date("2000-01-01"),as.Date(currmonth),"months") %>% as.data.frame()
+names(spread.months) <- c("date")
+
+spread.months <- spread.months %>% dplyr::mutate(.,year=lubridate::year(date),month=lubridate::month(date))
+
+## Join Prime Rate with Months
+primerate_data <- left_join(spread.months,fredpull,by=c("year","month")) %>% tidyr::fill(., .direction = "down", "value")
+
+
+## Get data prepared for merge with Mintel
+primerate_data <- dplyr::select(primerate_data,date.x,value)
+names(primerate_data) <- c("periodida","primerate")
+primerate_data$periodida <- as.Date(primerate_data$periodida)+1/12-1
+
+## We have to remove the March 2020 double interest rate
+primerate_data <- primerate_data %>% 
+  dplyr::group_by(periodida) %>% 
+  dplyr::summarize(primerate = as.numeric(min(primerate))
+                   ,.groups = 'drop') %>% #the .groups is just to avoid a warning message 
+  dplyr::ungroup() %>%
+  dplyr::filter(year(periodida) >= 2015) %>%
+  mutate(year = year(periodida)
+         , month=month(periodida)
+          )
+
+write.csv(primerate_data,paste0(rootdir,"/primerate_data.csv"))
+```
+
+
+# Chart 6: Sloos Demand
+```{r}
+  # Set parameters
+    obs_start <- "2000-01-01"
+    sloos_demand_cc_api <- paste0(
+        "https://api.stlouisfed.org/fred/series/observations?series_id="
+        ,"DEMCC"
+        ,"&api_key=",fred_key
+        ,"&file_type=json&observation_start=",obs_start
+        )
+
+     sloos_demand_cl_api <- paste0(
+        "https://api.stlouisfed.org/fred/series/observations?series_id="
+        ,"DRSDCL"
+        ,"&api_key=",fred_key
+        ,"&file_type=json&observation_start=",obs_start
+        )
+# Look out sloos data is quarterly so I want to be careful about how to format it.   
+  # Get and format as data
+    sloos_demand_cl <- GET(sloos_demand_cl_api)
+    sloos_demand_cl  <- fromJSON(rawToChar(sloos_demand_cl$content)) %>% .$observations
+    
+    sloos_demand_cc <- GET(sloos_demand_cc_api)
+    sloos_demand_cc  <- fromJSON(rawToChar(sloos_demand_cc$content)) %>% .$observations
+
+    sloos_demand_cl <- sloos_demand_cl %>% 
+        dplyr::mutate(., year=lubridate::year(.$date)
+                       ,month=(lubridate::month(.$date)+2)
+                      , qtr_ending_date = as.Date(paste(year,month,'01',sep='-'))
+                      , stronger_demand_cl = as.numeric(value)
+                      ) %>%
+        arrange(qtr_ending_date) %>%
+        select(qtr_ending_date,stronger_demand_cl) 
+    
+    
+    sloos_demand_cc <- sloos_demand_cc %>% 
+        dplyr::mutate(., year=lubridate::year(.$date)
+                       ,month=(lubridate::month(.$date)+2)
+                      , qtr_ending_date = as.Date(paste(year,month,'01',sep='-'))
+                      , stronger_demand_cc = as.numeric(value)
+                      ) %>%
+        select(qtr_ending_date,stronger_demand_cc) 
+    
+sloos_demand_all <- full_join(sloos_demand_cc,sloos_demand_cl, by="qtr_ending_date")
+
+write.csv(sloos_demand_all,paste0(rootdir,"/sloos_demand_all.csv"))
+
+    
+```
+
+   
+```{r, echo=FALSE}
+sloos_demand_all <- read.csv(paste0(rootdir,"/sloos_demand_all.csv"), row.names=1)
+  sloos_demand_all$qtr_ending_date <- as.Date(sloos_demand_all$qtr_ending_date)
+
+plot_ly( type='scatter', mode = 'lines') %>%
+  add_trace(data=sloos_demand_all, x=~qtr_ending_date, y=~stronger_demand_cc/100, name="Credit Cards (starting 2011Q2)") %>%
+  add_trace(data=sloos_demand_all, x=~qtr_ending_date, y=~stronger_demand_cl/100, name="Consumer Loans (ending 2011Q1)") %>%
+    layout( title = "Net Percent of Domestic Banks Reporting Stronger Demand for Consumer Loans"
+           , yaxis = list(title = "Percentage", tickformat = '%')
+           , xaxis = list(title = 'Quarter')
+           , legend= list(orientation = 'h', y=-0.2)
+          , margin = list(r=60, t=50)
+          , hovermode = 'x unified'
+          ) %>%
+      layout(annotations = plotly_source("Source: SLOOs"))
+
+```
+    
+
+# Chart 7: Sloos Standards
+```{r}
+  # Set parameters
+    obs_start <- "2000-01-01"
+    sloos_api <- paste0(
+        "https://api.stlouisfed.org/fred/series/observations?series_id="
+        ,"DRTSCLCC"
+        ,"&api_key=",fred_key
+        ,"&file_type=json&observation_start=",obs_start
+        )
+
+# Look out sloos data is quarterly so I want to be careful about how to format it.   
+  # Get and format as data
+    sloos <- GET(sloos_api)
+    sloospull  <- fromJSON(rawToChar(sloos$content)) %>% .$observations
+    
+    sloos_standards <- sloospull %>% 
+        dplyr::mutate(., year=lubridate::year(.$date)
+                       ,month=(lubridate::month(.$date)+2)
+                      , qtr_ending_date = as.Date(paste(year,month,'01',sep='-'))
+                      , pct_banks_tightening = as.numeric(value)
+                      ) %>%
+        select(qtr_ending_date,pct_banks_tightening) 
+    
+  write.csv(sloos_standards,paste0(rootdir,"/sloos_standards.csv"))
+
+```
+
+```{r, echo= FALSE}
+sloos_standards <- read.csv(paste0(rootdir,"/sloos_standards.csv"), row.names=1)
+  sloos_standards$qtr_ending_date <- as.Date(sloos_standards$qtr_ending_date)
+
+plot_ly(mode='lines', type='scatter') %>%
+    add_trace(data=sloos_standards, x=~qtr_ending_date, y=~pct_banks_tightening/100, name= "Percentage") %>%
+    layout( title = "Net Percent of Domestic Banks Tightening Standards for Credit Cards"
+           , yaxis = list(title = "Percentage", tickformat = '%')
+           , xaxis = list(title = 'Quarter')
+           , legend= list(orientation = 'h', y=-0.2)
+          , margin = list(r=60, t=50)
+          , hovermode = 'x unified'
+          )  %>%
+      layout(annotations = plotly_source("Source: SLOOs"))
+
+```
+
+# Haver Data
+
+
+#### Old Data
+```{r,eval=FALSE}
+
+public_most_recent_period <- max(as.Date(dir(paste0(data_directory))))    
+  public_directory <- paste0(data_directory,"/2021-09-01/Data/")
+  
+  haver_data_old <- read.csv(paste0(public_directory,"haver_raw_file.csv"))
+
+    haver_data_old <- haver_data_old %>% filter(!is.na(mortgages))
+    haver_data_old$date <- as.Date(haver_data_old$string_date)
+
+haver_chart <- haver_data_old %>%
+    mutate(all_other_credit = (autos + cards + student_loans)) %>%
+    arrange(desc(date))
+  
+a <- haver_chart %>% filter(!is.na(date)) %>% filter(!is.na(cards))
+a$cards_ses <- ts(a[['cards']], frequency = 4, start=c(1995,3)) %>% seas(., out=FALSE) %>% .$data %>% data.frame() %>% .$final
+a$autos_ses <- ts(a[['autos']], frequency = 4, start=c(1995,3)) %>% seas(., out=FALSE) %>% .$data %>% data.frame() %>% .$final
+a$mortgages_ses <- ts(a[['mortgages']], frequency = 4, start=c(1995,3)) %>% seas(., out=FALSE) %>% .$data %>% data.frame() %>% .$final
+b <- a %>% filter(year(date) >= 2006)
+b$stls_ses <- ts(b[['student_loans']], frequency = 4, start=c(2006,3)) %>% seas(., out=FALSE) %>% .$data %>% data.frame() %>% .$final 
+b <- b %>% select(date,stls_ses)
+haver_chart_ses <- left_join(a,b, by="date") %>%
+mutate(all_other_credit_ses = (autos_ses + cards_ses + stls_ses)) %>%
+  filter(year(date)>= 2005)
+
+
+  #write.csv(haver_chart_ses,paste0(rootdir,"/haver_data.csv"))
+
+
+plot_ly(mode='lines', type='scatter') %>%
+    add_trace(data=haver_chart, x=~date, y=~mortgages, name = "Mortgages", line=list(color='#EC407A')) %>% 
+    add_trace(data=haver_chart, x=~date, y=~all_other_credit, name = "Auto, Card, and Student Loans", line=list(color='#90A4AE')) %>% 
+    layout(title='Consumer Credit Outstanding: Home Mortgages & Other'
+        , annotations = plotly_subtitle('Seasonally Adjusted')
+        , legend = list(orientation = "h", y=-.3)
+         , xaxis = list(title="Report Month")
+         , yaxis = list(side = 'left', title = 'Billions ($) ', showgrid = FALSE, zeroline = FALSE)
+         #, yaxis2 = list(side = 'right', title = "Billions ($) for Home Mortgages" , showgrid = FALSE, zeroline = FALSE, overlaying = 'y' )
+         , margin = list(r=60, t=50)
+         , hovermode = 'x unified'
+         ) %>%
+  layout(annotations = plotly_source("Source: Flow of Funds"))
+    
+	
+
+plot_ly(mode='lines', type='scatter') %>%
+    add_trace(data=haver_chart, x=~date, y=~autos, name = "Autos", line=list(color='#9C27B0')) %>% 
+    add_trace(data=haver_chart, x=~date, y=~cards, name = "Cards",line=list(color='#4FC3F7')) %>% 
+    add_trace(data=haver_chart, x=~date, y=~student_loans, name = "Student Loans", line=list(color='#43A047')) %>% 
+    layout(title='Consumer Credit Outstanding: Autos, Cards, and Student Loans'
+        #, annotations = plotly_subtitle('Seasonally Adjusted')
+        , legend = list(orientation = "h", y=-.3)
+         , xaxis = list(title="Report Month")
+         , yaxis = list(side = 'left', title = 'Billions ($) ', showgrid = FALSE, zeroline = FALSE)
+        #, yaxis2 = list(side = 'right', title = "Billions ($) for Home Mortgages" , showgrid = FALSE, zeroline = FALSE, overlaying = 'y' )
+         , margin = list(r=60, t=50)
+         , hovermode = 'x unified'
+         )  %>%
+    layout(annotations = plotly_source("Source: Flow of Funds"))
+head(haver_chart)
+
+```
+
+#### Auto
+
+https://fred.stlouisfed.org/series/MVLOAS
+
+```{r auto}
+# Get the API
+    obs_start <- "2000-01-01"
+    haver_auto_api <- paste0(
+        "https://api.stlouisfed.org/fred/series/observations?series_id="
+        ,"MVLOAS"
+        ,"&api_key=",fred_key
+        ,"&file_type=json&observation_start=",obs_start
+        )
+
+# Look out sloos data is quarterly so I want to be careful about how to format it.   
+  # Get and format as data
+    haver_auto <- GET(haver_auto_api)
+    haver_auto  <- fromJSON(rawToChar(haver_auto$content)) %>% .$observations
+    haver_auto <- haver_auto %>% 
+        mutate(autos = as.numeric(value)) %>%
+        select(date, autos) %>%
+        arrange(desc(date))
+
+# Seasonally Adjust series 
+  haver_auto$autos_ses <- ts(haver_auto[['autos']], frequency = 4, start=c(1995,3)) %>% seas(., out=FALSE) %>% .$data %>% data.frame() %>% .$final
+  
+head(haver_auto)
+
+
+```
+
+
+#### Student Loans
+
+https://fred.stlouisfed.org/series/SLOAS
+
+```{r}
+
+obs_start <- "2000-01-01"
+    haver_stls_api <- paste0(
+        "https://api.stlouisfed.org/fred/series/observations?series_id="
+        ,"SLOAS"
+        ,"&api_key=",fred_key
+        ,"&file_type=json&observation_start=",obs_start
+        )
+
+# Look out sloos data is quarterly so I want to be careful about how to format it.   
+  # Get and format as data
+    haver_stls <- GET(haver_stls_api)
+    haver_stls  <- fromJSON(rawToChar(haver_stls$content)) %>% .$observations
+    haver_stls <- haver_stls %>% 
+        mutate(student_loans = as.numeric(value)) %>%
+        select(date, student_loans) %>%
+        arrange(desc(date))
+
+# Seasonally Adjust series 
+  haver_stls$stls_ses <- ts(haver_stls[['student_loans']], frequency = 4, start=c(2006,3)) %>% seas(., out=FALSE) %>% .$data %>% data.frame() %>% .$final 
+ 
+head(haver_stls)
+```
+
+#### Cards 
+
+https://fred.stlouisfed.org/series/REVOLNS
+
+```{r}
+obs_start <- "2000-01-01"
+    haver_cards_api <- paste0(
+        "https://api.stlouisfed.org/fred/series/observations?series_id="
+        ,"REVOLNS"
+        ,"&api_key=",fred_key
+        ,"&file_type=json&observation_start=",obs_start
+        )
+
+# Revolving Consumer Credit is actually monthly.It seems like have just takes the levels at 3,6,9,12
+  # Get and format as data
+    haver_cards <- GET(haver_cards_api)
+    haver_cards  <- fromJSON(rawToChar(haver_cards$content)) %>% .$observations
+    haver_cards <- haver_cards %>% 
+        select(date, value) %>%
+        arrange(desc(date)) %>%
+        mutate(cards = as.numeric(value)
+              , qtr_date = as.Date(date)
+               , year = year(qtr_date)
+               , month = month(qtr_date)
+               ) %>%
+        #filter(month %in% c(3,6,9,12)) %>%
+        select(qtr_date, cards) %>%
+        arrange(desc(qtr_date))
+
+# Seasonally Adjust series 
+  haver_cards$cards_ses <- ts(haver_cards[['cards']], frequency = 12, start=c(1995,3)) %>% seas(., out=FALSE) %>% .$data %>% data.frame() %>% .$final      
+    
+head(haver_cards,19)
+```
+
+
+
+#### Mortgages 
+
+https://fred.stlouisfed.org/series/HMLBSHNO
+```{r}
+obs_start <- "2000-01-01"
+    haver_mort_api <- paste0(
+        "https://api.stlouisfed.org/fred/series/observations?series_id="
+        ,"HMLBSHNO"
+        ,"&api_key=",fred_key
+        ,"&file_type=json&observation_start=",obs_start
+        )
+
+# Look out sloos data is quarterly so I want to be careful about how to format it.   
+  # Get and format as data
+    haver_mort <- GET(haver_mort_api)
+    haver_mort  <- fromJSON(rawToChar(haver_mort$content)) %>% .$observations
+    haver_mort <- haver_mort %>% 
+        mutate(mortgages = as.numeric(value)) %>%
+        select(date, mortgages) %>%
+        arrange(desc(date)) 
+
+# Seasonally Adjust series 
+    haver_mort$mortgages_ses <- ts(haver_mort[['mortgages']], frequency = 4, start=c(1995,3)) %>% seas(., out=FALSE) %>% .$data %>% data.frame() %>% .$final
+
+head(haver_mort)
+```
+
+#### Merge
+
+```{r}
+library(lubridate)
+# First merge the ones that are the first of the qtr
+  haver_join <- full_join(haver_auto,haver_mort , by='date')
+  haver_join <- full_join(haver_join,haver_stls , by='date')
+
+# Move to the end of the qtr
+  haver_join <- haver_join %>%
+      mutate(tmp_date = as.Date(date) 
+             , qtr_date = tmp_date %m+% months(2)
+            ) %>%
+    arrange(desc(date)) %>%
+    select(-c(tmp_date, date))
+  
+# Join with cards
+  haver_join_all <- full_join(haver_join, haver_cards, by='qtr_date')
+  
+  #sort(unique(haver_join_all$qtr_date))
+  
+# Get "all other credit" 
+haver_chart_ses <- haver_join_all %>%
+    mutate(all_other_credit = (autos + cards + student_loans)
+           , all_other_credit_ses = (autos_ses + cards_ses + stls_ses)) %>%
+    filter(year(qtr_date)>= 2005) %>%
+    arrange(desc(qtr_date))
+
+```
+
+# Save
+```{r}
+  write.csv(haver_chart_ses,paste0(rootdir,"/haver_data.csv"))
+
+```
+
+
+```{r}
+haver_chart_quarterly <- haver_chart_ses %>% 
+    mutate(month= month(qtr_date)) %>%
+    filter(month %in% c(3,6,9,12))
+
+plot_ly(mode='lines', type='scatter') %>%
+    add_trace(data=haver_chart_quarterly, x=~qtr_date, y=~mortgages, name = "Mortgages", line=list(color='#EC407A')) %>% 
+    add_trace(data=haver_chart_quarterly, x=~qtr_date, y=~all_other_credit, name = "Auto, Card, and Student Loans", line=list(color='#90A4AE')) %>% 
+    layout(title='Consumer Credit Outstanding: Home Mortgages & Other'
+        #, annotations = plotly_subtitle('Seasonally Adjusted')
+        , legend = list(orientation = "h", y=-.3)
+         , xaxis = list(title="Report Month")
+         , yaxis = list(side = 'left', title = 'Billions ($) ', showgrid = FALSE, zeroline = FALSE)
+         #, yaxis2 = list(side = 'right', title = "Billions ($) for Home Mortgages" , showgrid = FALSE, zeroline = FALSE, overlaying = 'y' )
+         , margin = list(r=60, t=50)
+         , hovermode = 'x unified'
+         ) %>%
+    layout(annotations = plotly_source_long("Source: G.19 Consumer Credit, Z.1 Financial Accounts of the United States – retrieved from FRED"))
+    
+	
+
+plot_ly(mode='lines', type='scatter') %>%
+    add_trace(data=haver_chart_ses, x=~qtr_date, y=~cards, name = "Cards",line=list(color='#4FC3F7')) %>% 
+    add_trace(data=haver_chart_quarterly, x=~qtr_date, y=~autos, name = "Autos", line=list(color='#9C27B0')) %>% 
+    add_trace(data=haver_chart_quarterly, x=~qtr_date, y=~student_loans, name = "Student Loans", line=list(color='#43A047')) %>% 
+    layout(title='Consumer Credit Outstanding: Autos, Cards, and Student Loans'
+        #, annotations = plotly_subtitle('Seasonally Adjusted')
+        , legend = list(orientation = "h", y=-.3)
+         , xaxis = list(title="Report Month")
+         , yaxis = list(side = 'left', title = 'Billions ($) ', showgrid = FALSE, zeroline = FALSE)
+        #, yaxis2 = list(side = 'right', title = "Billions ($) for Home Mortgages" , showgrid = FALSE, zeroline = FALSE, overlaying = 'y' )
+         , margin = list(r=60, t=50)
+         , hovermode = 'x unified'
+         )  %>%
+    layout(annotations = plotly_source_long("Source: G.19 Consumer Credit, Z.1 Financial Accounts of the United States – retrieved from FRED"))
+```
+
